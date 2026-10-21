@@ -49,3 +49,7 @@
 - Очередь CUPS: `lpadmin -p SP202SN -E -v ipp://localhost:8000/ipp/print/sp202sn -m everywhere`; `lp -d SP202SN hello.pdf` → macOS шлёт `image/urf` с `compression=gzip`; принтер напечатал (счётчик 9224 → 9225).
 - **macOS Local Network (TCC):** свежесобранный ad-hoc-подписанный бинарник, запущенный из сессии Claude, получает `No route to host` (EHOSTUNREACH) при TCP-connect к принтеру, тогда как системные `nc`/`python3` подключаются. Включение Claude в Privacy → Local Network без перезапуска не помогло. Запуск сервера из Terminal.app с разрешением локальной сети — работает. Для `brew services` ожидать системный запрос «…хочет найти устройства в локальной сети» от имени бинарника; описать в README.
 - Если очередь CUPS уходила в `printer-stopped` (устройство было недоступно), нужно `cancel` старого задания и `cupsenable SP202SN`.
+
+## Новая сборка (ricoh-socket://), 2026-10-21
+- Два задания подряд из очереди CUPS (`hello.pdf`, `job2.pdf`): оба completed, 2 листа, счётчик 9225 → 9227, ~40 с от `lp` до idle.
+- Half-close (`shutdown(SHUT_WR)`) в конце задания: принтер закрывает соединение сразу (задания 1 и 2 завершились с разницей 0,2 с), ожидания 10 с нет. Одно TCP-соединение на задание — рабочая схема.
