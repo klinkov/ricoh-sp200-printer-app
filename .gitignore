@@ -4,3 +4,6 @@ build/
 *.dSYM/
 .DS_Store
 tests/golden/*.out
+tests/golden/*.pbm
+tests/golden/*.jbg
+tests/golden/.stamp

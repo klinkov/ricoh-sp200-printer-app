@@ -77,7 +77,7 @@ PPD/CUPS-фильтры устаревшими (apple/cups#5270); на macOS 26 
 <ESC>%-12345X
 ```
 
-JBIG1 (ITU-T T.82) через libjbig (jbigkit): 1 плоскость, options = HITOLO|VLENGTH (0x48), order = ILEAVE|SMID
+JBIG1 (ITU-T T.82) через libjbig (jbigkit): 1 плоскость, options = LRLTWO|TPBON (0x48), order = ILEAVE|SMID
 (0x03), 128 строк в полосе; эквивалент `pbmtojbg -p 72 -o 3 -m 0`.
 
 Неоднозначности, снимаются на этапе 0:

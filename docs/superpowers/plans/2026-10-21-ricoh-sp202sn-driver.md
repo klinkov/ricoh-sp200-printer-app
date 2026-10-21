@@ -15,7 +15,7 @@
 - Платформа: macOS 26.7.1, Apple Silicon; сборка clang из Command Line Tools; cmake не используется.
 - Рантайм-зависимости только `pappl`, `jbigkit`; Ghostscript/ImageMagick/netpbm — только в тестах (`pbmtojbg`).
 - Разрешение 600×600 dpi; бумага A4/Letter/A5/B5/Legal/Executive; источники TRAY1, MANUAL; 1 плоскость, 1 бит.
-- JBIG: эквивалент `pbmtojbg -p 72 -o 3 -m 0 -q` → order=3 (ILEAVE|SMID), options=72, mx=0; golden-тест байт-в-байт.
+- JBIG: эквивалент `pbmtojbg -p 72 -o 3 -m 0 -q` → order=3 (ILEAVE|SMID), options=72 (LRLTWO|TPBON), mx=0, один слой (`jbg_enc_layers(0)`), l0 = libjbig по умолчанию (height/35, 2..128); golden-тест байт-в-байт.
 - Все PJL-строки оканчиваются CRLF; UEL = `\x1b%-12345X`.
 - Никаких коммитов агентами; коммитит оркестратор после своего `make test`.
 - Лицензия MIT; код `ricoh-sp100` / `ricoh-universal-ddst-driver` не копировать.
@@ -139,11 +139,12 @@ void ddst_dither_free(ddst_dither_t *d);
 void ddst_threshold_row(const uint8_t *gray8, unsigned width, uint8_t *out_1bpp); /* <128 → чёрный; для текста */
 typedef struct { const char *pwg_name; const char *pjl_name; unsigned width_px_600; unsigned height_px_600; } ddst_paper_t;
 const ddst_paper_t *ddst_paper_lookup(const char *pwg_media_size_name); /* NULL если нет */
+const ddst_paper_t *ddst_paper_at(size_t i); /* перебор таблицы, NULL за концом */
 ```
 - Таблица (мм → px при 600 dpi, округление к ближайшему): `iso_a4_210x297mm`→A4 4961×7016; `na_letter_8.5x11in`→LETTER 5100×6600; `iso_a5_148x210mm`→A5 3496×4961; `jis_b5_182x257mm`→B5 4299×6071; `na_legal_8.5x14in`→LEGAL 5100×8400; `na_executive_7.25x10.5in`→EXECUTIVE 4350×6300. (Значения уточняются после этапа 0a; хранить в одном месте.)
 
 - [ ] **Step 1: Write failing tests:**
-  - `test_threshold_row`: gray `{0,127,128,255,0,0,0,0}` → `0xC8`.
+  - `test_threshold_row`: gray `{0,127,128,255,0,0,0,0}` → `0xCF`.
   - `test_dither_flat_50_percent`: 64×64 gray=128 → доля чёрных 45–55 %.
   - `test_dither_white_black`: gray 255 → все 0; gray 0 → все 1.
   - `test_paper_lookup_a4`: `iso_a4_210x297mm` → `A4`, 4961, 7016. `test_paper_lookup_unknown`: `na_index-4x6_4x6in` → NULL.
