@@ -40,3 +40,7 @@
 ## Веб-панель (Web Image Monitor, http://192.168.1.60/)
 - `H02_Home_status.htm`: «Общий счётчик» = 9172 (отличается от SNMP prtMarkerLifeCount 9219 — разные счётчики; для этапа 0a фиксировать оба), тонер — только графическая шкала 0/50/100.
 - `H11_device_info.htm`: серийник, память 32 MB. Точного счётчика тонера нет → DOTCOUNT проверять через SNMP `prtMarkerSuppliesLevel` на большом объёме печати либо принять /100 (вариант фильтра, заявившего SP 202SN) и наблюдать.
+
+## Device-ID по SNMP (для auto-add)
+- PWG OID `1.3.6.1.4.1.2699.1.2.1.2.1.1.3.1` → `MFG:RICOH ;CMD:GDI;MDL:SP 202SN DDST;CLS:PRINTER;` (обратить внимание: пробел после RICOH, суффикс ` DDST` в модели).
+- HP/Lexmark OID не отвечают. `hrDeviceDescr.1` = `RICOH SP 202SN DDST`.
