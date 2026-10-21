@@ -1,7 +1,11 @@
-# Print-Job with a PWG raster file, then report the final job state.
-# usage: ipptool -tv -f FILE -d media=... -d copies=N -d mdh=... ipp://localhost:PORT/ipp/print/NAME print-job.test
+# Print-Job, then wait for the job to finish and report its final state.
+# usage: ipptool -T 60 -tv -f FILE -d format=MIME -d media=... -d copies=N [-d mdh=...] [-d content=...]
+#        ipp://localhost:PORT/ipp/print/NAME print-job.test
+# Without -d mdh the request carries no multiple-document-handling (the printer default applies).
+# With -d nowait=1 it only submits the job.
 {
-  NAME "Print-Job image/pwg-raster"
+  NAME "Print-Job with multiple-document-handling"
+  SKIP-IF-NOT-DEFINED mdh
   OPERATION Print-Job
   GROUP operation-attributes-tag
   ATTR charset attributes-charset utf-8
@@ -9,17 +13,38 @@
   ATTR uri printer-uri $uri
   ATTR name requesting-user-name $user
   ATTR name job-name "integration"
-  ATTR mimeMediaType document-format image/pwg-raster
+  ATTR mimeMediaType document-format $format
   GROUP job-attributes-tag
   ATTR keyword media $media
   ATTR integer copies $copies
+  ATTR keyword print-content-optimize $content
   ATTR keyword multiple-document-handling $mdh
   FILE $filename
   STATUS successful-ok
   EXPECT job-id OF-TYPE integer
 }
 {
-  NAME "Get-Job-Attributes"
+  NAME "Print-Job without multiple-document-handling"
+  SKIP-IF-DEFINED mdh
+  OPERATION Print-Job
+  GROUP operation-attributes-tag
+  ATTR charset attributes-charset utf-8
+  ATTR naturalLanguage attributes-natural-language en
+  ATTR uri printer-uri $uri
+  ATTR name requesting-user-name $user
+  ATTR name job-name "integration"
+  ATTR mimeMediaType document-format $format
+  GROUP job-attributes-tag
+  ATTR keyword media $media
+  ATTR integer copies $copies
+  ATTR keyword print-content-optimize $content
+  FILE $filename
+  STATUS successful-ok
+  EXPECT job-id OF-TYPE integer
+}
+{
+  NAME "Get-Job-Attributes (wait for a final state)"
+  SKIP-IF-DEFINED nowait
   OPERATION Get-Job-Attributes
   GROUP operation-attributes-tag
   ATTR charset attributes-charset utf-8
@@ -29,7 +54,9 @@
   ATTR name requesting-user-name $user
   ATTR keyword requested-attributes job-state,job-state-reasons,job-state-message,job-impressions-completed
   STATUS successful-ok
-  EXPECT job-state DISPLAY
-  EXPECT job-state-reasons DISPLAY
-  EXPECT ?job-state-message DISPLAY
+  EXPECT job-state OF-TYPE enum WITH-VALUE >6 REPEAT-NO-MATCH REPEAT-LIMIT 600
+  DELAY "0,0.1"
+  DISPLAY job-state
+  DISPLAY job-state-reasons
+  DISPLAY job-state-message
 }

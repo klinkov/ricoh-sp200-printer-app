@@ -1,9 +1,12 @@
 /* ricoh-sp200 PAPPL driver: PWG raster -> 1bpp -> libddst -> device. MIT License. */
 #include "driver.h"
+#include "device.h"
 #include "../ddst/ddst.h"
 #include "../ddst/dither.h"
 #include "../ddst/paper.h"
 
+#include <ctype.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +16,12 @@
 #define RICOH_RES        600
 #define RICOH_MARGIN     423 /* hundredths of mm (1/6 in), all sides */
 #define RICOH_MAX_COPIES 999
+#define RICOH_SIZE_TOLERANCE_MM 2.0
+/* Collated copies are built in memory; past this size the job falls back to printer copies.
+ * RICOH_COLLATE_MAX_BYTES overrides it (the integration test uses a small value). */
+#define RICOH_COLLATE_MAX ((size_t)128 << 20)
+
+static const char COPIES1[] = "@PJL SET COPIES=1\r\n";
 
 pappl_pr_driver_t ricoh_drivers[] = {
   {RICOH_DRIVER_NAME, "RICOH SP 200 series (SP 202SN)", "MFG:RICOH;MDL:SP 202SN;CMD:PJL;", NULL},
@@ -25,11 +34,14 @@ typedef struct {
   pappl_device_t      *device;
   ddst_job_t          *ddst;
   bool                 failed;      /* write/encode error: job is aborted, ddst already freed */
+  bool                 ricoh_socket; /* device is ricoh-socket:// (has ricoh_socket_end_job) */
   /* collated copies: the whole DDST job is built in memory with COPIES=1 and replayed */
   bool                 collate;
   unsigned             copies;
   unsigned char       *mem;
-  size_t               mem_len, mem_cap;
+  size_t               mem_len, mem_cap, mem_max;
+  size_t              *copies_off;  /* offsets of "@PJL SET COPIES=1" lines in mem, one per page */
+  unsigned             num_pages, cap_pages;
   /* current page */
   const ddst_paper_t  *paper;
   bool                 page_open;
@@ -110,6 +122,7 @@ static void free_rjob(rjob_t *r) {
   if (r->ddst)
     ddst_job_abort(r->ddst);
   free(r->mem);
+  free(r->copies_off);
   papplJobSetData(r->job, NULL);
   free(r);
 }
@@ -135,12 +148,56 @@ static ddst_source_t map_source(const char *source) {
   return DDST_SOURCE_TRAY1;
 }
 
+/* multiple-document-handling: absent means collated (PAPPL's default, multiple-document-handling-
+ * default=separate-documents-collated-copies); only the explicit uncollated value lets the
+ * printer make the copies. */
 static bool want_collated(pappl_job_t *job, int copies) {
   if (copies <= 1)
     return false;
   ipp_attribute_t *a = papplJobGetAttribute(job, "multiple-document-handling");
   const char *v = a ? ippGetString(a, 0, NULL) : NULL;
-  return v && !strcmp(v, "separate-documents-collated-copies");
+  return !v || strcmp(v, "separate-documents-uncollated-copies");
+}
+
+/* papplJobFilterImage (PNG/JPEG) calls rstartpage..rendpage once per copy itself; only raster
+ * documents (one pass over the pages) leave the copies to the driver. */
+static bool driver_makes_copies(pappl_job_t *job) {
+  const char *f = papplJobGetFormat(job);
+  return f && (!strcmp(f, "image/pwg-raster") || !strcmp(f, "image/urf"));
+}
+
+static size_t collate_max(void) {
+  const char *v = getenv("RICOH_COLLATE_MAX_BYTES");
+  char *end;
+  unsigned long long n = v ? strtoull(v, &end, 10) : 0;
+  return v && *v && !*end && n > 0 ? (size_t)n : RICOH_COLLATE_MAX;
+}
+
+/* Collate buffer is over the limit (checked between pages, so it holds whole pages only): send
+ * it now with COPIES=n patched into every page and let the printer make the remaining copies. */
+static bool collate_fallback(rjob_t *r) {
+  char line[32];
+  size_t pos = 0;
+  bool ok = true;
+  papplLogJob(r->job, PAPPL_LOGLEVEL_WARN,
+              "Collated copies: buffer reached %lu bytes (limit %lu) after %u pages; switching to printer "
+              "copies (COPIES=%u, uncollated).",
+              (unsigned long)r->mem_len, (unsigned long)r->mem_max, r->num_pages, r->copies);
+  papplJobSetMessage(r->job, "Job too large for collated copies; printing %u uncollated copies.", r->copies);
+  snprintf(line, sizeof(line), "@PJL SET COPIES=%u\r\n", r->copies);
+  for (unsigned i = 0; ok && i < r->num_pages; i++) {
+    ok = device_write_all(r, r->mem + pos, r->copies_off[i] - pos) &&
+         device_write_all(r, (const unsigned char *)line, strlen(line));
+    pos = r->copies_off[i] + sizeof(COPIES1) - 1;
+  }
+  ok = ok && device_write_all(r, r->mem + pos, r->mem_len - pos);
+  free(r->mem);
+  r->mem = NULL;
+  r->mem_len = r->mem_cap = 0;
+  r->collate = false;
+  if (!ok)
+    papplLogJob(r->job, PAPPL_LOGLEVEL_ERROR, "Device write failed sending the buffered pages.");
+  return ok;
 }
 
 static bool rstartjob_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_device_t *device) {
@@ -151,9 +208,14 @@ static bool rstartjob_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_de
   }
   r->job = job;
   r->device = device;
-  int copies = options->copies < 1 ? 1 : options->copies > RICOH_MAX_COPIES ? RICOH_MAX_COPIES : options->copies;
+  const char *uri = papplPrinterGetDeviceURI(papplJobGetPrinter(job));
+  r->ricoh_socket = uri && !strncmp(uri, RICOH_SOCKET_PREFIX, strlen(RICOH_SOCKET_PREFIX));
+  int copies = 1;
+  if (driver_makes_copies(job))
+    copies = options->copies < 1 ? 1 : options->copies > RICOH_MAX_COPIES ? RICOH_MAX_COPIES : options->copies;
   r->copies = (unsigned)copies;
   r->collate = want_collated(job, copies);
+  r->mem_max = collate_max();
   papplJobSetData(job, r);
 
   ddst_job_info_t info = {
@@ -162,15 +224,76 @@ static bool rstartjob_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_de
     .timestamp = 0,
     .dotcount_mode = DDST_DOTCOUNT_DIV100,
   };
-  papplLogJob(job, PAPPL_LOGLEVEL_INFO, "Starting DDST job: copies=%u (%s).", r->copies,
-              r->collate ? "collated, replayed by service" : "printer copies");
+  papplLogJob(job, PAPPL_LOGLEVEL_INFO, "Starting DDST job: format=%s copies=%u (%s).", papplJobGetFormat(job),
+              r->copies, r->copies <= 1 ? "single copy" : r->collate ? "collated, replayed by service" : "printer copies");
   r->ddst = ddst_job_start(&info, ddst_write_cb, r);
   if (!r->ddst) {
     job_error(job, PAPPL_JREASON_ABORTED_BY_SYSTEM, "Unable to start DDST job (write error or out of memory).");
+    papplDeviceFlush(device); /* rendjob will not run: reset the device for the next job */
+    if (r->ricoh_socket)
+      ricoh_socket_end_job(device);
     free_rjob(r);
     return false;
   }
   return true;
+}
+
+/* abort the ddst stream from rstartpage (before ddst_page_start) */
+static bool page_fail(rjob_t *r, pappl_jreason_t reason, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+
+static bool page_fail(rjob_t *r, pappl_jreason_t reason, const char *fmt, ...) {
+  char msg[512];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+  job_error(r->job, reason, "%s", msg);
+  free_page(r);
+  ddst_job_abort(r->ddst);
+  r->ddst = NULL;
+  r->failed = true;
+  return false;
+}
+
+static double px_to_mm(unsigned px) { return px * 25.4 / RICOH_RES; }
+
+/* Paper for this page: media.size_name if the raster is within 2 mm of it, else the supported paper
+ * whose size matches the raster (a client may send A5 pages on an A4 job); NULL if neither. */
+static const ddst_paper_t *page_paper(rjob_t *r, const pappl_pr_options_t *options) {
+  const cups_page_header2_t *h = &options->header;
+  const ddst_paper_t *paper = ddst_paper_lookup(options->media.size_name);
+  double w = px_to_mm(h->cupsWidth), l = px_to_mm(h->cupsHeight);
+  if (paper && fabs(w - px_to_mm(paper->width_px_600)) <= RICOH_SIZE_TOLERANCE_MM &&
+      fabs(l - px_to_mm(paper->height_px_600)) <= RICOH_SIZE_TOLERANCE_MM)
+    return paper;
+  pwg_media_t *pwg = pwgMediaForSize((int)lround(w * 100), (int)lround(l * 100));
+  const ddst_paper_t *alt = pwg ? ddst_paper_lookup(pwg->pwg) : NULL;
+  if (alt) {
+    papplLogJob(r->job, PAPPL_LOGLEVEL_INFO, "Raster page is %.1fx%.1f mm, not media \"%s\": using %s.", w, l,
+                options->media.size_name, alt->pwg_name);
+    return alt;
+  }
+  return NULL;
+}
+
+/* Print-content-optimize: text and auto -> plain threshold (sharp text, no dither noise in flat
+ * areas); photo, graphic, text-and-graphic -> Floyd-Steinberg. Auto on a PNG/JPEG document is a
+ * picture, so it is dithered too (PAPPL makes the same choice for its own 1-bit dither). */
+static bool use_threshold(pappl_job_t *job, const pappl_pr_options_t *options) {
+  if (options->print_content_optimize == PAPPL_CONTENT_TEXT)
+    return true;
+  if (options->print_content_optimize != PAPPL_CONTENT_AUTO)
+    return false;
+  const char *f = papplJobGetFormat(job);
+  return !(f && (!strcmp(f, "image/png") || !strcmp(f, "image/jpeg")));
+}
+
+static size_t find_copies1(const unsigned char *p, size_t from, size_t to) {
+  size_t n = sizeof(COPIES1) - 1;
+  for (size_t i = from; i + n <= to; i++)
+    if (!memcmp(p + i, COPIES1, n))
+      return i;
+  return (size_t)-1;
 }
 
 static bool rstartpage_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_device_t *device, unsigned page) {
@@ -180,33 +303,25 @@ static bool rstartpage_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_d
     return false;
 
   const cups_page_header2_t *h = &options->header;
-  const ddst_paper_t *paper = ddst_paper_lookup(options->media.size_name);
-  if (!paper) {
-    job_error(job, PAPPL_JREASON_DOCUMENT_UNPRINTABLE_ERROR, "Unsupported media size \"%s\".", options->media.size_name);
-    ddst_job_abort(r->ddst);
-    r->ddst = NULL;
-    r->failed = true;
-    return false;
-  }
-  if (h->HWResolution[0] != RICOH_RES || h->HWResolution[1] != RICOH_RES) {
-    job_error(job, PAPPL_JREASON_DOCUMENT_FORMAT_ERROR, "Unsupported raster resolution %ux%u (need %d dpi).",
-              h->HWResolution[0], h->HWResolution[1], RICOH_RES);
-    ddst_job_abort(r->ddst);
-    r->ddst = NULL;
-    r->failed = true;
-    return false;
-  }
-  if (h->cupsBitsPerPixel != 8 && h->cupsBitsPerPixel != 1) {
-    job_error(job, PAPPL_JREASON_DOCUMENT_FORMAT_ERROR, "Unsupported raster depth %u.", h->cupsBitsPerPixel);
-    ddst_job_abort(r->ddst);
-    r->ddst = NULL;
-    r->failed = true;
-    return false;
-  }
+  if (h->HWResolution[0] != RICOH_RES || h->HWResolution[1] != RICOH_RES)
+    return page_fail(r, PAPPL_JREASON_DOCUMENT_FORMAT_ERROR, "Unsupported raster resolution %ux%u (need %d dpi).",
+                     h->HWResolution[0], h->HWResolution[1], RICOH_RES);
+  /* raster_types is SGRAY_8 only (see ricoh_driver_cb), so anything else is a broken stream. */
+  if (h->cupsBitsPerPixel != 8)
+    return page_fail(r, PAPPL_JREASON_DOCUMENT_FORMAT_ERROR, "Unsupported raster depth %u bpp (need 8-bit gray).",
+                     h->cupsBitsPerPixel);
+  const ddst_paper_t *paper = page_paper(r, options);
+  if (!paper)
+    return page_fail(r, PAPPL_JREASON_DOCUMENT_UNPRINTABLE_ERROR,
+                     "Raster page size %.1fx%.1f mm matches neither media \"%s\" nor any supported paper.",
+                     px_to_mm(h->cupsWidth), px_to_mm(h->cupsHeight), options->media.size_name);
+
+  if (r->collate && r->mem_len >= r->mem_max && !collate_fallback(r))
+    return page_fail(r, PAPPL_JREASON_ABORTED_BY_SYSTEM, "Device write failed.");
 
   r->paper = paper;
   r->src_width = h->cupsWidth < paper->width_px_600 ? h->cupsWidth : paper->width_px_600;
-  r->threshold = options->print_content_optimize == PAPPL_CONTENT_TEXT;
+  r->threshold = use_threshold(job, options);
   papplLogJob(job, PAPPL_LOGLEVEL_INFO,
               "Page %u: media=%s source=%s raster %ux%ux%u -> PAPER=%s %ux%u (%s%s).", page + 1,
               options->media.size_name, options->media.source[0] ? options->media.source : "(none)",
@@ -217,16 +332,10 @@ static bool rstartpage_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_d
 
   r->row = calloc(1, (paper->width_px_600 + 7) / 8);
   r->gray = malloc(r->src_width ? r->src_width : 1);
-  if (h->cupsBitsPerPixel == 8 && !r->threshold && r->src_width)
+  if (!r->threshold && r->src_width)
     r->dither = ddst_dither_new(r->src_width);
-  if (!r->row || !r->gray || (h->cupsBitsPerPixel == 8 && !r->threshold && r->src_width && !r->dither)) {
-    job_error(job, PAPPL_JREASON_ABORTED_BY_SYSTEM, "Out of memory.");
-    free_page(r);
-    ddst_job_abort(r->ddst);
-    r->ddst = NULL;
-    r->failed = true;
-    return false;
-  }
+  if (!r->row || !r->gray || (!r->threshold && r->src_width && !r->dither))
+    return page_fail(r, PAPPL_JREASON_ABORTED_BY_SYSTEM, "Out of memory.");
 
   ddst_page_info_t pi = {
     .paper = paper->pjl_name,
@@ -236,8 +345,23 @@ static bool rstartpage_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_d
     .copies = r->collate ? 1 : r->copies,
     .source = map_source(options->media.source),
   };
+  size_t before = r->mem_len;
   if (!ddst_page_start(r->ddst, &pi))
     return fail_ddst(r, "ddst_page_start");
+  if (r->collate) { /* remember where COPIES=1 is, for collate_fallback */
+    size_t off = find_copies1(r->mem, before, r->mem_len);
+    if (off == (size_t)-1)
+      return fail_ddst(r, "locating COPIES in the collate buffer");
+    if (r->num_pages == r->cap_pages) {
+      unsigned cap = r->cap_pages ? 2 * r->cap_pages : 64;
+      size_t *p = realloc(r->copies_off, cap * sizeof(*p));
+      if (!p)
+        return fail_ddst(r, "recording page offset (out of memory)");
+      r->copies_off = p;
+      r->cap_pages = cap;
+    }
+    r->copies_off[r->num_pages++] = off;
+  }
   r->page_open = true;
   return true;
 }
@@ -254,28 +378,21 @@ static bool rwriteline_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_d
     return true; /* longer than the paper: drop extra rows */
 
   const cups_page_header2_t *h = &options->header;
-  unsigned w = r->src_width, bytes = (w + 7) / 8;
+  unsigned w = r->src_width;
   size_t rowbytes = (r->paper->width_px_600 + 7) / 8;
   memset(r->row, 0, rowbytes);
 
-  if (h->cupsBitsPerPixel == 8) {
-    const unsigned char *src = line;
-    if (h->cupsColorSpace == CUPS_CSPACE_K) { /* 0 = white: invert to 0 = black */
-      for (unsigned x = 0; x < w; x++)
-        r->gray[x] = (unsigned char)(255 - line[x]);
-      src = r->gray;
-    }
-    if (r->threshold)
-      ddst_threshold_row(src, w, r->row);
-    else if (w)
-      ddst_dither_row(r->dither, src, r->row);
-  } else { /* 1 bpp */
-    bool white_is_one = h->cupsColorSpace != CUPS_CSPACE_K;
-    for (unsigned i = 0; i < bytes; i++)
-      r->row[i] = white_is_one ? (unsigned char)~line[i] : line[i];
-    if (w & 7)
-      r->row[bytes - 1] &= (unsigned char)(0xFF << (8 - (w & 7)));
+  /* 8-bit only: rstartpage rejects other depths. */
+  const unsigned char *src = line;
+  if (h->cupsColorSpace == CUPS_CSPACE_K) { /* 0 = white: invert to 0 = black */
+    for (unsigned x = 0; x < w; x++)
+      r->gray[x] = (unsigned char)(255 - line[x]);
+    src = r->gray;
   }
+  if (r->threshold)
+    ddst_threshold_row(src, w, r->row);
+  else if (w)
+    ddst_dither_row(r->dither, src, r->row);
 
   if (!ddst_page_write_row(r->ddst, r->row))
     return fail_ddst(r, "ddst_page_write_row");
@@ -330,7 +447,16 @@ static bool rendjob_cb(pappl_job_t *job, pappl_pr_options_t *options, pappl_devi
       }
     }
   }
+  /* The last <= 8 KB leave in papplDeviceFlush, which returns nothing: on ricoh-socket:// the end
+   * of job (half-close, wait for the printer) and the device status tell whether they arrived. */
   papplDeviceFlush(device);
+  if (r->ricoh_socket) {
+    bool sent = ricoh_socket_end_job(device);
+    if ((!sent || (papplDeviceGetStatus(device) & PAPPL_PREASON_OTHER)) && ok) {
+      job_error(job, PAPPL_JREASON_ABORTED_BY_SYSTEM, "Printer connection failed at the end of the job.");
+      ok = false;
+    }
+  }
   free_rjob(r);
   return ok;
 }
@@ -373,8 +499,10 @@ bool ricoh_driver_cb(pappl_system_t *system, const char *driver_name, const char
   d->content_default = PAPPL_CONTENT_AUTO;
   d->quality_default = IPP_QUALITY_NORMAL;
   d->scaling_default = PAPPL_SCALING_AUTO;
-  /* SGRAY_8 only: PAPPL 1.4.9 keeps its own sgray_8 options->header when a client sends 1-bit
-   * raster, so the driver could not tell the line format; 8-bit is what macOS sends anyway. */
+  /* SGRAY_8 only, no 1-bit path: PAPPL 1.4.9 keeps its own sgray_8 options->header when a client
+   * sends 1-bit raster, so the driver could not tell the line format; 8-bit is what macOS sends
+   * anyway, and the driver's own threshold/dither replaces PAPPL's 1-bit dither. rstartpage aborts
+   * any page whose header is not 8 bpp. */
   d->raster_types = PAPPL_PWG_RASTER_TYPE_SGRAY_8;
   d->duplex = PAPPL_DUPLEX_NONE;
   d->sides_supported = PAPPL_SIDES_ONE_SIDED;
@@ -403,25 +531,42 @@ bool ricoh_driver_cb(pappl_system_t *system, const char *driver_name, const char
   return true;
 }
 
-static bool id_value_matches(int n, cups_option_t *pairs, const char *k1, const char *k2, const char *prefix) {
+/* Copy a device-id value without surrounding blanks ("RICOH " in the real ID). */
+static const char *id_value(int n, cups_option_t *pairs, const char *k1, const char *k2, char *buf, size_t bufsize) {
   const char *v = cupsGetOption(k1, n, pairs);
   if (!v)
     v = cupsGetOption(k2, n, pairs);
-  return v && !strncasecmp(v, prefix, strlen(prefix));
+  if (!v)
+    return NULL;
+  while (isspace((unsigned char)*v))
+    v++;
+  snprintf(buf, bufsize, "%s", v);
+  for (size_t len = strlen(buf); len > 0 && isspace((unsigned char)buf[len - 1]); len--)
+    buf[len - 1] = '\0';
+  return buf;
 }
 
+static bool sp200_model(const char *model) {
+  return !strncasecmp(model, "SP 20", 5) || !strncasecmp(model, "SP20", 4);
+}
+
+/* Real SP 202SN device-id: "MFG:RICOH ;CMD:GDI;MDL:SP 202SN DDST;CLS:PRINTER;". If the ID names a
+ * manufacturer and model, they decide; otherwise fall back to device_info ("RICOH SP 202SN ..."). */
 const char *ricoh_autoadd_cb(const char *device_info, const char *device_uri, const char *device_id, void *data) {
-  (void)device_info;
   (void)device_uri;
   (void)data;
-  if (!device_id || !*device_id)
-    return NULL;
-  cups_option_t *pairs = NULL;
-  int n = papplDeviceParseID(device_id, &pairs);
-  const char *ret = NULL;
-  if (id_value_matches(n, pairs, "MFG", "MANUFACTURER", "RICOH") &&
-      (id_value_matches(n, pairs, "MDL", "MODEL", "SP 20") || id_value_matches(n, pairs, "MDL", "MODEL", "SP20")))
-    ret = RICOH_DRIVER_NAME;
-  cupsFreeOptions(n, pairs);
-  return ret;
+  if (device_id && *device_id) {
+    cups_option_t *pairs = NULL;
+    char mfg[128], mdl[128];
+    int n = papplDeviceParseID(device_id, &pairs);
+    const char *m = id_value(n, pairs, "MFG", "MANUFACTURER", mfg, sizeof(mfg));
+    const char *d = id_value(n, pairs, "MDL", "MODEL", mdl, sizeof(mdl));
+    bool decided = m && d, match = decided && !strcasecmp(m, "RICOH") && sp200_model(d);
+    cupsFreeOptions(n, pairs);
+    if (decided)
+      return match ? RICOH_DRIVER_NAME : NULL;
+  }
+  if (device_info && !strncasecmp(device_info, "RICOH SP 20", 11))
+    return RICOH_DRIVER_NAME;
+  return NULL;
 }

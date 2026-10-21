@@ -66,6 +66,18 @@ $(BUILD)/tools/pbm2ddst: tools/pbm2ddst.c $(LIB) $(LIB_HDR)
 test-tools: tools
 	sh tests/test_tools.sh $(BUILD)/tools
 
+# --- install (Task 7) ---
+PREFIX ?= /usr/local
+
+.PHONY: install uninstall
+
+install: app
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m 755 $(BUILD)/ricoh-sp200-printer-app $(DESTDIR)$(PREFIX)/bin/ricoh-sp200-printer-app
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/ricoh-sp200-printer-app
+
 clean:
 	rm -rf $(BUILD)
 
@@ -73,9 +85,10 @@ clean:
 PAPPL_CFLAGS ?= $(shell pkg-config --cflags pappl)
 PAPPL_LIBS   ?= $(shell pkg-config --libs pappl)
 APP      = $(BUILD)/ricoh-sp200-printer-app
-APP_SRC  = src/app/main.c src/app/driver.c
-APP_HDR  = src/app/driver.h
-IT_BIN   = $(BUILD)/integration/mock-sink $(BUILD)/integration/mkpwg $(BUILD)/integration/check-ddst
+APP_SRC  = src/app/main.c src/app/driver.c src/app/device.c
+APP_HDR  = src/app/driver.h src/app/device.h
+IT_BIN   = $(BUILD)/integration/mock-sink $(BUILD)/integration/mkpwg $(BUILD)/integration/check-ddst \
+           $(BUILD)/integration/mkpng $(BUILD)/integration/test-autoadd
 
 .PHONY: app integration
 
@@ -96,6 +109,14 @@ $(BUILD)/integration/mkpwg: tests/integration/mkpwg.c
 $(BUILD)/integration/check-ddst: tests/integration/check-ddst.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(JBIG_CFLAGS) $< $(JBIG_LIBS) -o $@
+
+$(BUILD)/integration/mkpng: tests/integration/mkpng.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $< -lz -o $@
+
+$(BUILD)/integration/test-autoadd: tests/integration/test-autoadd.c src/app/driver.c src/app/device.c $(APP_HDR) $(LIB) $(LIB_HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(PAPPL_CFLAGS) $< src/app/driver.c src/app/device.c $(LIB) $(JBIG_LIBS) $(PAPPL_LIBS) -o $@
 
 integration: $(APP) $(IT_BIN)
 	sh tests/integration/run.sh

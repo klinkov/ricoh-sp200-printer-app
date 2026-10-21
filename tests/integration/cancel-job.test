@@ -1,0 +1,26 @@
+# Cancel the first not-completed job on the printer.
+# usage: ipptool -T 60 -tv ipp://localhost:PORT/ipp/print/NAME cancel-job.test
+{
+  NAME "Get-Jobs (find the processing job)"
+  OPERATION Get-Jobs
+  GROUP operation-attributes-tag
+  ATTR charset attributes-charset utf-8
+  ATTR naturalLanguage attributes-natural-language en
+  ATTR uri printer-uri $uri
+  ATTR name requesting-user-name $user
+  ATTR keyword which-jobs not-completed
+  ATTR keyword requested-attributes job-id,job-state
+  STATUS successful-ok
+  EXPECT job-id OF-TYPE integer DEFINE-VALUE cancel_id
+}
+{
+  NAME "Cancel-Job"
+  OPERATION Cancel-Job
+  GROUP operation-attributes-tag
+  ATTR charset attributes-charset utf-8
+  ATTR naturalLanguage attributes-natural-language en
+  ATTR uri printer-uri $uri
+  ATTR integer job-id $cancel_id
+  ATTR name requesting-user-name $user
+  STATUS successful-ok
+}
