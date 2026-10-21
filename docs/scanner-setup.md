@@ -19,25 +19,35 @@ printer-app не участвуют.
 4. Проверка с другого устройства или с самого Mac: `smbutil view //scanner@192.168.1.126` должен показать
    шару `Scans`.
 
-## 2. Принтер: добавить адресата в Web Image Monitor
+## 2. Принтер: добавить адресата (только через Smart Organizing Monitor, Windows)
 
-1. В браузере открыть `http://192.168.1.60/` → «Вход в систему» (пароль администратора; по умолчанию у
-   Ricoh этой серии он пустой или `admin` — если не менялся).
-2. Меню **Scan Destination** (в русской панели — «Адресат сканирования»; у некоторых прошивок —
-   «One Touch Button») → **Add New Type** → **Folder** (Папка).
-3. Заполнить:
-   | Поле | Значение |
-   |---|---|
-   | Name | `Mac` (до 16 символов, покажется на панели) |
-   | Quick Dial | по желанию, чтобы вызывать одной кнопкой |
-   | Service Name | `\\192.168.1.126\Scans` (IP или имя Mac + имя шары; 64 + 32 символа) |
-   | Domain | пусто |
-   | Login User Name | `scanner` (пользователь Mac с доступом к папке) |
-   | Password | его пароль |
-   | Directory | пусто (или подпапка внутри шары) |
-   | File format (B&W / Color) | PDF (или JPEG/TIFF) |
-   | Scan size / Resolution / Density | по вкусу; 300 dpi для документов |
-4. Submit. Если есть кнопка «Test»/«Connection test» — нажать.
+**Важно (проверено 2026-10-21 на SP 202SN, прошивка DDST V1.02):** Web Image Monitor этой модели не
+содержит сканерных настроек — после входа администратора меню только сетевое: Interface Settings, IPv4,
+IPv6, SNMP, Administrator Settings, Restore Defaults, Machine Information. Раздел «Scan Destination» есть
+у старших серий (SP 21x/31x), но не здесь. Адресная книга SP 202SN/204SN программируется исключительно
+утилитой **Smart Organizing Monitor for SP 200 Series** (Windows; есть на диске/на сайте Ricoh в составе
+драйверов SP 202SN). Достаточно сделать это один раз с любого Windows-ПК или виртуальной машины в той же
+сети — адресаты хранятся в принтере, дальше Windows не нужен.
+
+1. Windows: установить Smart Organizing Monitor (из пакета драйверов SP 202SN), запустить
+   «Smart Organizing Monitor for SP xxx Series Status», выбрать принтер по IP `192.168.1.60`.
+2. Вкладка **User Tools** → **Scanner Destination** (в некоторых версиях «Address Book») → **Add**:
+   | Поле | Значение (вариант Mac) | Значение (вариант SSD роутера) |
+   |---|---|---|
+   | Name | `Mac` | `SSD` |
+   | Type | Scan to Folder | Scan to Folder |
+   | Address (SMB-сервер) | `192.168.1.126` (или имя Mac) | `192.168.1.1` |
+   | Share / Service Name | `Scans` | `SDD` |
+   | User Name | `scanner` | пусто (гость) или `shade` |
+   | Password | пароль `scanner` | пусто или пароль `shade` |
+   | Directory | пусто | `Scans` |
+   | File format | PDF | PDF |
+3. Apply/OK — утилита записывает адресную книгу в принтер по сети. Проверить на панели: Scanner →
+   Address Book → адресат виден.
+
+Если Windows нет совсем: протокол, которым SOM пишет адресную книгу, не задокументирован; в сети принтер
+слушает 80/515/631/2323/9100, SNMP-ветка Ricoh (1.3.6.1.4.1.367) адресной книги не содержит. Сделать
+Mac-утилиту можно только после захвата трафика SOM (Windows-VM + Wireshark) — отдельная задача.
 
 ## 3. Сканирование
 
