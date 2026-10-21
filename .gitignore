@@ -1,0 +1,6 @@
+build/
+*.o
+*.a
+*.dSYM/
+.DS_Store
+tests/golden/*.out
