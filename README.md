@@ -7,11 +7,12 @@ macOS печатает по AirPrint/IPP на `localhost:8000`, приложен
 
 ## Установка
 
-Из tap (после публикации):
+Из tap (Homebrew требует явно доверять сторонним tap — и PAPPL-тапу `shawnz/printing`, и этому):
 
 ```sh
-brew tap klinkov/ricoh
-brew install klinkov/ricoh/ricoh-sp200-printer-app
+brew tap shawnz/printing && brew trust shawnz/printing
+brew tap klinkov/ricoh && brew trust klinkov/ricoh
+brew install ricoh-sp200-printer-app
 ```
 
 Локально из клона (Homebrew принимает формулы только из tap, поэтому свой локальный tap):
