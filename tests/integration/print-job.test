@@ -1,0 +1,35 @@
+# Print-Job with a PWG raster file, then report the final job state.
+# usage: ipptool -tv -f FILE -d media=... -d copies=N -d mdh=... ipp://localhost:PORT/ipp/print/NAME print-job.test
+{
+  NAME "Print-Job image/pwg-raster"
+  OPERATION Print-Job
+  GROUP operation-attributes-tag
+  ATTR charset attributes-charset utf-8
+  ATTR naturalLanguage attributes-natural-language en
+  ATTR uri printer-uri $uri
+  ATTR name requesting-user-name $user
+  ATTR name job-name "integration"
+  ATTR mimeMediaType document-format image/pwg-raster
+  GROUP job-attributes-tag
+  ATTR keyword media $media
+  ATTR integer copies $copies
+  ATTR keyword multiple-document-handling $mdh
+  FILE $filename
+  STATUS successful-ok
+  EXPECT job-id OF-TYPE integer
+}
+{
+  NAME "Get-Job-Attributes"
+  OPERATION Get-Job-Attributes
+  GROUP operation-attributes-tag
+  ATTR charset attributes-charset utf-8
+  ATTR naturalLanguage attributes-natural-language en
+  ATTR uri printer-uri $uri
+  ATTR integer job-id $job-id
+  ATTR name requesting-user-name $user
+  ATTR keyword requested-attributes job-state,job-state-reasons,job-state-message,job-impressions-completed
+  STATUS successful-ok
+  EXPECT job-state DISPLAY
+  EXPECT job-state-reasons DISPLAY
+  EXPECT ?job-state-message DISPLAY
+}

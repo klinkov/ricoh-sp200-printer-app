@@ -68,3 +68,34 @@ test-tools: tools
 
 clean:
 	rm -rf $(BUILD)
+
+# --- PAPPL printer application + mock integration test (Task 6) ---
+PAPPL_CFLAGS ?= $(shell pkg-config --cflags pappl)
+PAPPL_LIBS   ?= $(shell pkg-config --libs pappl)
+APP      = $(BUILD)/ricoh-sp200-printer-app
+APP_SRC  = src/app/main.c src/app/driver.c
+APP_HDR  = src/app/driver.h
+IT_BIN   = $(BUILD)/integration/mock-sink $(BUILD)/integration/mkpwg $(BUILD)/integration/check-ddst
+
+.PHONY: app integration
+
+app: $(APP)
+
+$(APP): $(APP_SRC) $(APP_HDR) $(LIB) $(LIB_HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(PAPPL_CFLAGS) $(APP_SRC) $(LIB) $(JBIG_LIBS) $(PAPPL_LIBS) -o $@
+
+$(BUILD)/integration/mock-sink: tests/integration/mock-sink.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD)/integration/mkpwg: tests/integration/mkpwg.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $< -lcups -o $@
+
+$(BUILD)/integration/check-ddst: tests/integration/check-ddst.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(JBIG_CFLAGS) $< $(JBIG_LIBS) -o $@
+
+integration: $(APP) $(IT_BIN)
+	sh tests/integration/run.sh
