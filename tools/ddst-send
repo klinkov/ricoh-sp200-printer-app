@@ -1,0 +1,10 @@
+#!/bin/sh
+# usage: ddst-send <host> [port=9100] <file>
+# Sends a DDST file over a raw TCP socket. Exit code = nc's.
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+  echo "usage: ddst-send <host> [port=9100] <file>" >&2; exit 2
+fi
+host=$1
+if [ $# -eq 3 ]; then port=$2; file=$3; else port=9100; file=$2; fi
+[ -r "$file" ] || { echo "ddst-send: cannot read $file" >&2; exit 2; }
+nc -w 30 "$host" "$port" < "$file"

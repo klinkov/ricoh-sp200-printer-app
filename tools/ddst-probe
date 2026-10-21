@@ -1,0 +1,20 @@
+#!/bin/sh
+# usage: ddst-probe <host>   (read-only probe)
+[ $# -eq 1 ] || { echo "usage: ddst-probe <host>" >&2; exit 2; }
+h=$1
+echo "== ports"
+for p in 80 443 515 631 9100; do
+  if nc -z -G 2 "$h" "$p" >/dev/null 2>&1; then echo "$p open"; else echo "$p closed"; fi
+done
+echo "== eSCL"
+out=$(curl -s -m 5 "http://$h/eSCL/ScannerCapabilities" | head -c 300)
+if [ -n "$out" ]; then echo "$out"; else echo "(empty)"; fi
+echo "== SNMP"
+if command -v snmpget >/dev/null 2>&1; then
+  for o in 1.3.6.1.2.1.1.1.0 1.3.6.1.2.1.43.10.2.1.4.1.1 1.3.6.1.2.1.25.3.5.1.1.1 \
+           1.3.6.1.2.1.43.11.1.1.9.1.1; do
+    snmpget -v1 -c public -t 2 -r 1 "$h" "$o" 2>&1 | head -n 1
+  done
+else
+  echo "snmpget not found, skipped"
+fi

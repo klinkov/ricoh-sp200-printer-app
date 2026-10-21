@@ -48,5 +48,23 @@ golden: $(GOLDEN_STAMP)
 test: $(TEST_BIN) $(GOLDEN_STAMP)
 	@set -e; for t in $(TEST_BIN); do echo "== $$t"; ./$$t; done
 
+# Hardware-test tools (stage 0a)
+TOOLS_BIN = $(BUILD)/tools/mkgrid $(BUILD)/tools/pbm2ddst
+
+.PHONY: tools test-tools
+
+tools: $(TOOLS_BIN)
+
+$(BUILD)/tools/mkgrid: tools/mkgrid.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(BUILD)/tools/pbm2ddst: tools/pbm2ddst.c $(LIB) $(LIB_HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(JBIG_CFLAGS) $< $(LIB) $(JBIG_LIBS) -o $@
+
+test-tools: tools
+	sh tests/test_tools.sh $(BUILD)/tools
+
 clean:
 	rm -rf $(BUILD)
