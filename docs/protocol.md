@@ -44,3 +44,8 @@
 ## Device-ID по SNMP (для auto-add)
 - PWG OID `1.3.6.1.4.1.2699.1.2.1.2.1.1.3.1` → `MFG:RICOH ;CMD:GDI;MDL:SP 202SN DDST;CLS:PRINTER;` (обратить внимание: пробел после RICOH, суффикс ` DDST` в модели).
 - HP/Lexmark OID не отвечают. `hrDeviceDescr.1` = `RICOH SP 202SN DDST`.
+
+## Сквозная печать с macOS (2026-10-21)
+- Очередь CUPS: `lpadmin -p SP202SN -E -v ipp://localhost:8000/ipp/print/sp202sn -m everywhere`; `lp -d SP202SN hello.pdf` → macOS шлёт `image/urf` с `compression=gzip`; принтер напечатал (счётчик 9224 → 9225).
+- **macOS Local Network (TCC):** свежесобранный ad-hoc-подписанный бинарник, запущенный из сессии Claude, получает `No route to host` (EHOSTUNREACH) при TCP-connect к принтеру, тогда как системные `nc`/`python3` подключаются. Включение Claude в Privacy → Local Network без перезапуска не помогло. Запуск сервера из Terminal.app с разрешением локальной сети — работает. Для `brew services` ожидать системный запрос «…хочет найти устройства в локальной сети» от имени бинарника; описать в README.
+- Если очередь CUPS уходила в `printer-stopped` (устройство было недоступно), нужно `cancel` старого задания и `cupsenable SP202SN`.
