@@ -22,3 +22,15 @@
 ## Рекомендация
 - Убрать сканирование из scope драйвера. Остаётся только печать.
 - Единственная проверка, которая может изменить вывод: осмотреть корпус (есть ли планшет/ADF) и серийную табличку. Если сканера нет — закрыть задачу. Если есть: захват трафика Windows-драйвера в VM (Wireshark на мосту), оценка 1-2 недели reverse engineering на SCAN-протокол; WSD/eSCL-пути маловероятны.
+
+## Повторная проверка (2026-10-21, вечер): сетевое сканирование есть — push-модель
+
+Пользователь сообщил, что под Windows сетевой сканер работает. Разбор руководства серии (Ricoh SP 21x, тот же Web Image Monitor; SP 204SN datasheet) даёт:
+
+- **Scan to E-mail / Scan to FTP / Scan to Folder** — «available only through a network connection»: принтер сам отправляет скан (SMTP / FTP / SMB) по адресату из адресной книги. Адресаты регистрируются **только в Web Image Monitor** (вход администратора → «Scan Destination» / «One Touch Button» → Add New Type: Folder; поля Name, Service Name = `\\IP-или-имя\шара`, Domain, Login User Name, Password, Directory, форматы). С панели принтера адресаты не задаются. В списке поддерживаемых получателей папок указан Mac OS X.
+- **TWAIN/WIA** — pull-модель: TWAIN-драйвер с CD, только Windows; datasheet SP 204SN относит TWAIN/WIA к USB. В сети принтер не открывает сканерных портов (см. выше), т. е. «сетевой TWAIN» для этой серии — это, по сути, тот же push через адресную книгу либо USB.
+- Следствие для macOS: **драйвер не нужен**. Достаточно SMB-шары на Mac (System Settings → Sharing → File Sharing) и записи Folder-адресата в Web Image Monitor. Сканирование запускается с панели принтера (Scanner → Address Book → адресат → Start); файл (PDF/JPEG/TIFF) появляется в папке. Альтернатива — Scan to FTP на локальный FTP-сервер, но SMB у macOS встроенный.
+
+**Вывод: GO** для схемы «Scan to Folder → SMB-шара Mac» (конфигурация + документация, без кода). Pull-сканирование из Image Capture — NO-GO (нужен реверс USB/TWAIN).
+
+Состояние Mac на момент проверки: шара `Public` с guest-доступом объявлена, но `smbd` не запущен (File Sharing выключен).
