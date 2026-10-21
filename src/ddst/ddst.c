@@ -36,7 +36,7 @@ static bool emit(ddst_job_t *job, const void *buf, size_t len) {
   if (len == 0) return true;
   if (job->write(job->ctx, buf, len) != len) {
     job->write_failed = true;
-    set_error(job, "write failed");
+    if (!job->error[0]) set_error(job, "write failed"); /* keep the first error */
     return false;
   }
   return true;
@@ -105,17 +105,33 @@ ddst_job_t *ddst_job_start(const ddst_job_info_t *info, ddst_write_fn write, voi
   return job;
 }
 
+#define DDST_MAX_WIDTH_PX  9000   /* 600 dpi * 15 in, with margin */
+#define DDST_MAX_HEIGHT_PX 13000
+#define DDST_MAX_COPIES    999
+
 bool ddst_page_start(ddst_job_t *job, const ddst_page_info_t *page) {
   if (!job) return false;
   job->error[0] = '\0';
   if (job->page_open) { set_error(job, "page already started"); return false; }
-  if (!page || !page->paper || !page->paper[0]) { set_error(job, "no paper name"); return false; }
+  if (!page || !page->paper) { set_error(job, "no paper name"); return false; }
+  char paper[32];
+  sanitize(paper, sizeof(paper), page->paper);
+  if (!paper[0]) { set_error(job, "no paper name"); return false; }
   if (page->width_px == 0 || page->height_px == 0) { set_error(job, "empty page geometry"); return false; }
-  if (page->copies < 1) { set_error(job, "copies must be >= 1"); return false; }
+  if (page->width_px > DDST_MAX_WIDTH_PX || page->height_px > DDST_MAX_HEIGHT_PX) {
+    set_error(job, "page too large");
+    return false;
+  }
+  if (page->resolution != 600) { set_error(job, "unsupported resolution"); return false; }
+  if ((unsigned)page->source != (unsigned)DDST_SOURCE_TRAY1 &&
+      (unsigned)page->source != (unsigned)DDST_SOURCE_MANUAL) {
+    set_error(job, "invalid media source");
+    return false;
+  }
+  if (page->copies < 1 || page->copies > DDST_MAX_COPIES) { set_error(job, "copies must be 1..999"); return false; }
   if (job->write_failed) { set_error(job, "earlier write failed"); return false; }
 
   size_t bpl = ((size_t)page->width_px + 7) / 8;
-  if ((size_t)-1 / page->height_px < bpl) { set_error(job, "page too large"); return false; }
   job->bitmap = calloc(bpl * page->height_px, 1);
   if (!job->bitmap) { set_error(job, "out of memory"); return false; }
   job->bpl = bpl;
@@ -123,8 +139,6 @@ bool ddst_page_start(ddst_job_t *job, const ddst_page_info_t *page) {
   job->rows = 0;
   job->page_open = true;
 
-  char paper[32];
-  sanitize(paper, sizeof(paper), page->paper);
   bool ok = emitf(job, "@PJL SET PAGESTATUS=START\r\n") &&
             emitf(job, "@PJL SET COPIES=%u\r\n", page->copies) &&
             emitf(job, "@PJL SET MEDIASOURCE=%s\r\n",
@@ -134,11 +148,13 @@ bool ddst_page_start(ddst_job_t *job, const ddst_page_info_t *page) {
             emitf(job, "@PJL SET PAPERWIDTH=%u\r\n", page->width_px) &&
             emitf(job, "@PJL SET PAPERLENGTH=%u\r\n", page->height_px) &&
             emitf(job, "@PJL SET RESOLUTION=%u\r\n", page->resolution);
+  if (!ok) free_page(job); /* caller must now call ddst_job_abort only */
   return ok;
 }
 
 bool ddst_page_write_row(ddst_job_t *job, const uint8_t *row) {
   if (!job) return false;
+  job->error[0] = '\0';
   if (!job->page_open) { set_error(job, "no page started"); return false; }
   if (!row) { set_error(job, "NULL row"); return false; }
   if (job->rows >= job->page.height_px) { set_error(job, "too many rows"); return false; }
@@ -216,6 +232,9 @@ static void jbig_out_cb(unsigned char *start, size_t len, void *file) {
   o->len += len;
 }
 
+/* NB: libjbig calls abort() on its own allocation failure (jbg_enc_init/jbg_enc_out
+ * use checked_malloc); only our output-buffer OOM is recoverable. This is why page
+ * dimensions are capped in ddst_page_start. */
 static bool jbig_encode(ddst_job_t *job, jbig_out_t *out) {
   struct jbg_enc_state s;
   unsigned char *planes[1] = { job->bitmap };
@@ -231,6 +250,7 @@ static bool jbig_encode(ddst_job_t *job, jbig_out_t *out) {
 
 bool ddst_page_end(ddst_job_t *job) {
   if (!job) return false;
+  job->error[0] = '\0';
   if (!job->page_open) { set_error(job, "ddst_page_end without ddst_page_start"); return false; }
 
   /* rows not written stay white (calloc); padding bits were cleared on write */
@@ -254,6 +274,7 @@ bool ddst_page_end(ddst_job_t *job) {
 
 bool ddst_job_end(ddst_job_t *job) {
   if (!job) return false;
+  job->error[0] = '\0';
   bool ok = true;
   if (job->page_open) {
     ok = false;

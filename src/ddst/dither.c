@@ -30,6 +30,7 @@ void ddst_dither_free(ddst_dither_t *d) {
 }
 
 void ddst_dither_row(ddst_dither_t *d, const uint8_t *gray8, uint8_t *out_1bpp) {
+  if (!d || !gray8 || !out_1bpp) return;
   unsigned w = d->width;
   memset(out_1bpp, 0, ((size_t)w + 7) / 8);
   memset(d->next, 0, ((size_t)w + 2) * sizeof(int));
@@ -62,6 +63,7 @@ void ddst_dither_row(ddst_dither_t *d, const uint8_t *gray8, uint8_t *out_1bpp) 
 }
 
 void ddst_threshold_row(const uint8_t *gray8, unsigned width, uint8_t *out_1bpp) {
+  if (!gray8 || !out_1bpp) return;
   memset(out_1bpp, 0, ((size_t)width + 7) / 8);
   for (unsigned x = 0; x < width; x++)
     if (gray8[x] < 128) out_1bpp[x >> 3] |= (uint8_t)(0x80 >> (x & 7));

@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define PBM_MAX_BYTES ((size_t)64 << 20) /* total bitmap size cap: 64 MiB */
+
 /* Reads one header integer, skipping whitespace and '#' comments. */
 static bool read_uint(FILE *f, unsigned *out) {
   int c;
@@ -37,8 +39,10 @@ bool pbm_read(const char *path, unsigned *w, unsigned *h, uint8_t **rows) {
   bool ok = false;
   uint8_t *buf = NULL;
   unsigned ww, hh;
-  if (fgetc(f) == 'P' && fgetc(f) == '4' && read_uint(f, &ww) && read_uint(f, &hh) &&
-      ww > 0 && hh > 0) {
+  int m0 = fgetc(f), m1 = fgetc(f), m2 = fgetc(f);
+  if (m0 == 'P' && m1 == '4' && m2 != EOF && isspace(m2) && read_uint(f, &ww) &&
+      read_uint(f, &hh) && ww > 0 && hh > 0 &&
+      (((size_t)ww + 7) / 8) * hh <= PBM_MAX_BYTES) {
     size_t n = ((size_t)ww + 7) / 8 * hh;
     buf = malloc(n);
     if (buf && fread(buf, 1, n, f) == n) ok = true;
